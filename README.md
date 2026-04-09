@@ -1,6 +1,6 @@
 # qiskit-blackwell
 
-Hand-written CUDA quantum simulation kernels for the NVIDIA RTX 5090 (Blackwell, sm_120a), integrated as a drop-in Qiskit backend.
+Custom CUDA quantum simulation kernels for the NVIDIA RTX 5090 (Blackwell, sm_120a), integrated as a drop-in Qiskit backend.
 
 **Blackwell beats Aer GPU (cuQuantum) on every circuit type tested** -- 2x to 5x faster end-to-end, with full statevector fidelity.
 
@@ -44,7 +44,7 @@ Statevector fidelity against Aer CPU (float64 reference). All circuits pass with
 
 ### 12 CUDA Kernels (`bwk/csrc/`)
 
-Every kernel is hand-written for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. Pure CUDA with PTX intrinsics where it matters.
+Every kernel is purpose-built for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. Pure CUDA with PTX intrinsics where it matters.
 
 | Kernel | Operation | Architecture |
 |--------|-----------|-------------|
@@ -190,7 +190,7 @@ NVIDIA's cuStateVec is designed for datacenter GPUs (A100, H100, B200) with feat
 - It doesn't fuse gates or cache transpilation results
 - Per-gate kernel launch overhead dominates at small qubit counts
 
-These hand-written kernels exploit sm_120a-specific features:
+These kernels exploit sm_120a-specific features:
 - **L2 persistence windows** keep state vectors warm across gate applications
 - **100% occupancy** (26 registers, zero shared memory for single-qubit gates)
 - **Vectorized float4 loads** for stride-1 qubit targets
