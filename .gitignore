@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+*.egg
+
+# Build artifacts
+build/
+*.so
+*.o
+*.d
+
+# Virtual environment
+.venv/
+
+# Aer source (kept locally for reference, not published)
+aer-src/
+
+# IDE
+.idea/
+.vscode/
+*.swp
