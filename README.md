@@ -218,6 +218,8 @@ NVIDIA's cuStateVec targets datacenter GPUs with features like multi-GPU distrib
 
 ## Hardware
 
+**Compatible with:** RTX 5090, 5080, 5070 Ti, 5070 (all sm_120a consumer Blackwell).
+
 Developed and tested on:
 - **GPU:** NVIDIA GeForce RTX 5090 (GB202, sm_120a, 170 SMs, 32 GB GDDR7)
 - **Bandwidth:** 1792 GB/s (GDDR7)
@@ -225,7 +227,7 @@ Developed and tested on:
 - **Shared Memory:** 99 KB per block
 - **CUDA:** 13.2
 
-This code targets sm_120a specifically. It uses `mma.sync` (not `tcgen05`) and consumer Blackwell PTX intrinsics. It will not run on datacenter Blackwell (B200/GB200) or previous GPU architectures.
+These kernels target sm_120a (consumer Blackwell) and should run on any GPU in the family -- RTX 5090, 5080, 5070 Ti, and 5070. Performance will scale with SM count and memory bandwidth, but correctness is architecture-level. They will not run on datacenter Blackwell (B200/GB200 use sm_100 with `tcgen05`, a different ISA) or previous GPU architectures.
 
 ## Project Structure
 
