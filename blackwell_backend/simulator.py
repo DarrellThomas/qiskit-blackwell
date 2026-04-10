@@ -1,3 +1,10 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Darrell Thomas / Redshed Lab LLC
+#
+# qiskit-blackwell — Custom CUDA quantum simulation kernels for RTX 5090
+# Licensed under the MIT License. See LICENSE file in the project root.
+# https://github.com/DarrellThomas/qiskit-blackwell
+
 """
 Qiskit-compatible statevector simulator using custom Blackwell CUDA kernels.
 
