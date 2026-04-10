@@ -30,6 +30,19 @@ __device__ __forceinline__ float2 cadd_b(float2 a, float2 b) {
     return make_float2(a.x + b.x, a.y + b.y);
 }
 
+// Compensated complex multiply-accumulate: g0*a0 + g1*a1 (TwoProduct pairwise)
+__device__ __forceinline__ float2 cmac2_b(float2 g0, float2 a0, float2 g1, float2 a1) {
+    float p0 = g0.x * a0.x, p1 = -g0.y * a0.y, p2 = g1.x * a1.x, p3 = -g1.y * a1.y;
+    float re = (p0 + p1) + (p2 + p3);
+    re += fmaf(g0.x, a0.x, -p0) + fmaf(-g0.y, a0.y, -p1)
+        + fmaf(g1.x, a1.x, -p2) + fmaf(-g1.y, a1.y, -p3);
+    float q0 = g0.x * a0.y, q1 = g0.y * a0.x, q2 = g1.x * a1.y, q3 = g1.y * a1.x;
+    float im = (q0 + q1) + (q2 + q3);
+    im += fmaf(g0.x, a0.y, -q0) + fmaf(g0.y, a0.x, -q1)
+        + fmaf(g1.x, a1.y, -q2) + fmaf(g1.y, a1.x, -q3);
+    return make_float2(re, im);
+}
+
 // Batched single-qubit gate: apply to all N state vectors.
 // Grid: dim3(ceil(num_pairs/256), N)
 __global__ void __launch_bounds__(256)
@@ -55,8 +68,8 @@ apply_gate_batched_sm120(
     int i1 = i0 | (1 << target_qubit);
 
     float2 a0 = state[i0], a1 = state[i1];
-    state[i0] = cadd_b(cmul_b(g00, a0), cmul_b(g01, a1));
-    state[i1] = cadd_b(cmul_b(g10, a0), cmul_b(g11, a1));
+    state[i0] = cmac2_b(g00, a0, g01, a1);
+    state[i1] = cmac2_b(g10, a0, g11, a1);
 }
 
 // stride-1 variant for target_qubit==0: float4 vectorized load
@@ -77,8 +90,8 @@ apply_gate_batched_stride1_sm120(
 
     float2 a0 = make_float2(v.x, v.y);
     float2 a1 = make_float2(v.z, v.w);
-    float2 new0 = cadd_b(cmul_b(g00, a0), cmul_b(g01, a1));
-    float2 new1 = cadd_b(cmul_b(g10, a0), cmul_b(g11, a1));
+    float2 new0 = cmac2_b(g00, a0, g01, a1);
+    float2 new1 = cmac2_b(g10, a0, g11, a1);
 
     state4[pid] = make_float4(new0.x, new0.y, new1.x, new1.y);
 }
@@ -119,8 +132,8 @@ apply_gates_batched_fused_sm120(
         int t = targets[g];
 
         if (t == 0) {
-            float2 new0 = cadd_b(cmul_b(g00, a0), cmul_b(g01, a1));
-            float2 new1 = cadd_b(cmul_b(g10, a0), cmul_b(g11, a1));
+            float2 new0 = cmac2_b(g00, a0, g01, a1);
+            float2 new1 = cmac2_b(g10, a0, g11, a1);
             a0 = new0;
             a1 = new1;
         } else {
@@ -134,8 +147,8 @@ apply_gates_batched_fused_sm120(
             bool is_low = (lane & xor_mask) == 0;
             float2 ga = is_low ? g00 : g11;
             float2 gb = is_low ? g01 : g10;
-            a0 = cadd_b(cmul_b(ga, a0), cmul_b(gb, p0));
-            a1 = cadd_b(cmul_b(ga, a1), cmul_b(gb, p1));
+            a0 = cmac2_b(ga, a0, gb, p0);
+            a1 = cmac2_b(ga, a1, gb, p1);
         }
     }
 

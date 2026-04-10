@@ -20,6 +20,28 @@ __device__ __forceinline__ float2 cmac(float2 acc, float2 a, float2 b) {
     return acc;
 }
 
+// Kahan-compensated 8-term dot product using TwoProduct (FMA)
+__device__ __forceinline__ float comp_dot8_qv(
+    float a0, float b0, float a1, float b1, float a2, float b2, float a3, float b3,
+    float a4, float b4, float a5, float b5, float a6, float b6, float a7, float b7) {
+    float s = a0 * b0, c = fmaf(a0, b0, -s), p, e, t;
+    #define KA(ai, bi) p=(ai)*(bi); e=fmaf((ai),(bi),-p); t=s+p; c+=e+((s-t)+p); s=t;
+    KA(a1,b1); KA(a2,b2); KA(a3,b3); KA(a4,b4); KA(a5,b5); KA(a6,b6); KA(a7,b7);
+    #undef KA
+    return s + c;
+}
+
+// Compensated complex multiply-accumulate: g0*a0 + g1*a1 + g2*a2 + g3*a3
+__device__ __forceinline__ float2 cmac4_qv(
+    float2 g0, float2 a0, float2 g1, float2 a1,
+    float2 g2, float2 a2, float2 g3, float2 a3) {
+    return make_float2(
+        comp_dot8_qv(g0.x,a0.x, -g0.y,a0.y, g1.x,a1.x, -g1.y,a1.y,
+                     g2.x,a2.x, -g2.y,a2.y, g3.x,a3.x, -g3.y,a3.y),
+        comp_dot8_qv(g0.x,a0.y, g0.y,a0.x, g1.x,a1.y, g1.y,a1.x,
+                     g2.x,a2.y, g2.y,a2.x, g3.x,a3.y, g3.y,a3.x));
+}
+
 // Batch-simulate QV-8 circuits.
 //
 // gate_matrices: [num_circuits, num_gates_per_circuit, 4, 4, 2]  (real/imag last)
@@ -76,12 +98,8 @@ __global__ void qv8_batch_simulate_kernel(
         const float2 g2 = grow[2];
         const float2 g3 = grow[3];
 
-        // Complex matrix-vector product for this row
-        float2 nv = make_float2(0.0f, 0.0f);
-        nv = cmac(nv, g0, a0);
-        nv = cmac(nv, g1, a1);
-        nv = cmac(nv, g2, a2);
-        nv = cmac(nv, g3, a3);
+        // Complex matrix-vector product for this row (Kahan-compensated)
+        float2 nv = cmac4_qv(g0, a0, g1, a1, g2, a2, g3, a3);
 
         __syncthreads();
         state[tid] = nv;

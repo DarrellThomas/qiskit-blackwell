@@ -32,6 +32,47 @@ __device__ __forceinline__ float2 cadd(float2 a, float2 b) {
     return make_float2(a.x + b.x, a.y + b.y);
 }
 
+// Kahan-compensated 8-term dot product using TwoProduct (FMA).
+// Computes sum of a_i*b_i for i=0..7 with ~1 ULP accuracy.
+__device__ __forceinline__ float comp_dot8(
+    float a0, float b0, float a1, float b1,
+    float a2, float b2, float a3, float b3,
+    float a4, float b4, float a5, float b5,
+    float a6, float b6, float a7, float b7) {
+
+    float s = a0 * b0;
+    float c = fmaf(a0, b0, -s);
+    float p, e, t;
+
+    #define KAHAN_ACCUM(ai, bi) \
+        p = (ai) * (bi); e = fmaf((ai), (bi), -p); \
+        t = s + p; c += e + ((s - t) + p); s = t;
+
+    KAHAN_ACCUM(a1, b1);
+    KAHAN_ACCUM(a2, b2);
+    KAHAN_ACCUM(a3, b3);
+    KAHAN_ACCUM(a4, b4);
+    KAHAN_ACCUM(a5, b5);
+    KAHAN_ACCUM(a6, b6);
+    KAHAN_ACCUM(a7, b7);
+
+    #undef KAHAN_ACCUM
+    return s + c;
+}
+
+// Compensated complex multiply-accumulate: g0*a0 + g1*a1 + g2*a2 + g3*a3.
+// Each complex product expands to 2 real products per component → 8-term dot.
+__device__ __forceinline__ float2 cmac4(
+    float2 g0, float2 a0, float2 g1, float2 a1,
+    float2 g2, float2 a2, float2 g3, float2 a3) {
+    return make_float2(
+        comp_dot8(g0.x, a0.x, -g0.y, a0.y, g1.x, a1.x, -g1.y, a1.y,
+                  g2.x, a2.x, -g2.y, a2.y, g3.x, a3.x, -g3.y, a3.y),
+        comp_dot8(g0.x, a0.y,  g0.y, a0.x, g1.x, a1.y,  g1.y, a1.x,
+                  g2.x, a2.y,  g2.y, a2.x, g3.x, a3.y,  g3.y, a3.x)
+    );
+}
+
 // v1: Specialized path for q0=0 with float4 vectorization.
 // When q0=0: i01=i00+1 and i11=i10+1, so pairs are adjacent.
 // Two float4 loads (16B each) replace four float2 loads (8B each).
@@ -71,14 +112,10 @@ apply_gate2q_q0zero_sm120(
     float2 a10 = make_float2(pair_hi.x, pair_hi.y);
     float2 a11 = make_float2(pair_hi.z, pair_hi.w);
 
-    float2 new00 = cadd(cadd(cmul(g00, a00), cmul(g01, a01)),
-                        cadd(cmul(g02, a10), cmul(g03, a11)));
-    float2 new01 = cadd(cadd(cmul(g10, a00), cmul(g11, a01)),
-                        cadd(cmul(g12, a10), cmul(g13, a11)));
-    float2 new10 = cadd(cadd(cmul(g20, a00), cmul(g21, a01)),
-                        cadd(cmul(g22, a10), cmul(g23, a11)));
-    float2 new11 = cadd(cadd(cmul(g30, a00), cmul(g31, a01)),
-                        cadd(cmul(g32, a10), cmul(g33, a11)));
+    float2 new00 = cmac4(g00, a00, g01, a01, g02, a10, g03, a11);
+    float2 new01 = cmac4(g10, a00, g11, a01, g12, a10, g13, a11);
+    float2 new10 = cmac4(g20, a00, g21, a01, g22, a10, g23, a11);
+    float2 new11 = cmac4(g30, a00, g31, a01, g32, a10, g33, a11);
 
     // float4 store: writes (new00, new01) as one 16B transaction
     *reinterpret_cast<float4*>(&state[i00]) = make_float4(new00.x, new00.y, new01.x, new01.y);
@@ -162,11 +199,9 @@ apply_gate2q_sm120(
         a0 = partner0; a1 = partner1; a2 = my0; a3 = my1;
     }
 
-    // Compute 2 outputs using this thread's 2 gate rows
-    float2 out0 = cadd(cadd(cmul(gr0, a0), cmul(gr1, a1)),
-                       cadd(cmul(gr2, a2), cmul(gr3, a3)));
-    float2 out1 = cadd(cadd(cmul(gs0, a0), cmul(gs1, a1)),
-                       cadd(cmul(gs2, a2), cmul(gs3, a3)));
+    // Compute 2 outputs using this thread's 2 gate rows (Kahan-compensated)
+    float2 out0 = cmac4(gr0, a0, gr1, a1, gr2, a2, gr3, a3);
+    float2 out1 = cmac4(gs0, a0, gs1, a1, gs2, a2, gs3, a3);
 
     // Even stores to i00, i01; odd stores to i10, i11
     if (qubit0 == 0) {

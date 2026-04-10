@@ -36,6 +36,28 @@ __device__ __forceinline__ float2 cadd_mc2(float2 a, float2 b) {
     return make_float2(a.x + b.x, a.y + b.y);
 }
 
+// Kahan-compensated 8-term dot product using TwoProduct (FMA)
+__device__ __forceinline__ float comp_dot8_mc2(
+    float a0, float b0, float a1, float b1, float a2, float b2, float a3, float b3,
+    float a4, float b4, float a5, float b5, float a6, float b6, float a7, float b7) {
+    float s = a0 * b0, c = fmaf(a0, b0, -s), p, e, t;
+    #define KA(ai, bi) p=(ai)*(bi); e=fmaf((ai),(bi),-p); t=s+p; c+=e+((s-t)+p); s=t;
+    KA(a1,b1); KA(a2,b2); KA(a3,b3); KA(a4,b4); KA(a5,b5); KA(a6,b6); KA(a7,b7);
+    #undef KA
+    return s + c;
+}
+
+// Compensated complex multiply-accumulate: g0*a0 + g1*a1 + g2*a2 + g3*a3
+__device__ __forceinline__ float2 cmac4_mc2(
+    float2 g0, float2 a0, float2 g1, float2 a1,
+    float2 g2, float2 a2, float2 g3, float2 a3) {
+    return make_float2(
+        comp_dot8_mc2(g0.x,a0.x, -g0.y,a0.y, g1.x,a1.x, -g1.y,a1.y,
+                      g2.x,a2.x, -g2.y,a2.y, g3.x,a3.x, -g3.y,a3.y),
+        comp_dot8_mc2(g0.x,a0.y, g0.y,a0.x, g1.x,a1.y, g1.y,a1.x,
+                      g2.x,a2.y, g2.y,a2.x, g3.x,a3.y, g3.y,a3.x));
+}
+
 // Kernel parameter struct — passed by value (fits in registers)
 struct MC2QGateParams {
     int sorted_qubits[10];  // sorted qubit positions (controls + 2 targets)
@@ -88,15 +110,11 @@ apply_mc2qgate_sm120(
     float2 a10 = state[i10];
     float2 a11 = state[i11];
 
-    // Apply 4x4 gate
-    state[i00] = cadd_mc2(cadd_mc2(cmul_mc2(g00, a00), cmul_mc2(g01, a01)),
-                           cadd_mc2(cmul_mc2(g02, a10), cmul_mc2(g03, a11)));
-    state[i01] = cadd_mc2(cadd_mc2(cmul_mc2(g10, a00), cmul_mc2(g11, a01)),
-                           cadd_mc2(cmul_mc2(g12, a10), cmul_mc2(g13, a11)));
-    state[i10] = cadd_mc2(cadd_mc2(cmul_mc2(g20, a00), cmul_mc2(g21, a01)),
-                           cadd_mc2(cmul_mc2(g22, a10), cmul_mc2(g23, a11)));
-    state[i11] = cadd_mc2(cadd_mc2(cmul_mc2(g30, a00), cmul_mc2(g31, a01)),
-                           cadd_mc2(cmul_mc2(g32, a10), cmul_mc2(g33, a11)));
+    // Apply 4x4 gate (Kahan-compensated)
+    state[i00] = cmac4_mc2(g00, a00, g01, a01, g02, a10, g03, a11);
+    state[i01] = cmac4_mc2(g10, a00, g11, a01, g12, a10, g13, a11);
+    state[i10] = cmac4_mc2(g20, a00, g21, a01, g22, a10, g23, a11);
+    state[i11] = cmac4_mc2(g30, a00, g31, a01, g32, a10, g33, a11);
 }
 
 

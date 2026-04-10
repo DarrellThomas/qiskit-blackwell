@@ -26,6 +26,34 @@ __device__ __forceinline__ float2 cadd(float2 a, float2 b) {
     return make_float2(a.x + b.x, a.y + b.y);
 }
 
+// Compensated complex multiply-accumulate: g0*a0 + g1*a1.
+// Uses TwoProduct (FMA) to capture rounding errors of each multiply,
+// then corrects the pairwise sum. ~2 ULP accuracy vs ~4 ULP for cmul+cadd.
+// Zero extra registers vs FMA chain; high ILP — products and errors
+// are independent, pairwise sums are partially independent.
+__device__ __forceinline__ float2 cmac2(float2 g0, float2 a0, float2 g1, float2 a1) {
+    // Real: g0.x*a0.x - g0.y*a0.y + g1.x*a1.x - g1.y*a1.y
+    float p0 = g0.x * a0.x;
+    float p1 = -g0.y * a0.y;
+    float p2 = g1.x * a1.x;
+    float p3 = -g1.y * a1.y;
+    float re = (p0 + p1) + (p2 + p3);
+    // TwoProduct error correction (all 4 FMAs are independent → ILP)
+    re += fmaf(g0.x, a0.x, -p0) + fmaf(-g0.y, a0.y, -p1)
+        + fmaf(g1.x, a1.x, -p2) + fmaf(-g1.y, a1.y, -p3);
+
+    // Imag: g0.x*a0.y + g0.y*a0.x + g1.x*a1.y + g1.y*a1.x
+    float q0 = g0.x * a0.y;
+    float q1 = g0.y * a0.x;
+    float q2 = g1.x * a1.y;
+    float q3 = g1.y * a1.x;
+    float im = (q0 + q1) + (q2 + q3);
+    im += fmaf(g0.x, a0.y, -q0) + fmaf(g0.y, a0.x, -q1)
+        + fmaf(g1.x, a1.y, -q2) + fmaf(g1.y, a1.x, -q3);
+
+    return make_float2(re, im);
+}
+
 // v3: Specialized path for target_qubit==0 (stride=1, adjacent pairs).
 // float4 load gets both amplitudes in one 16-byte transaction.
 // Gate loaded from device memory via pointer (avoids CPU copy overhead).
@@ -45,8 +73,8 @@ apply_gate_stride1(
     float2 a0 = make_float2(v.x, v.y);
     float2 a1 = make_float2(v.z, v.w);
 
-    float2 new0 = cadd(cmul(g00, a0), cmul(g01, a1));
-    float2 new1 = cadd(cmul(g10, a0), cmul(g11, a1));
+    float2 new0 = cmac2(g00, a0, g01, a1);
+    float2 new1 = cmac2(g10, a0, g11, a1);
 
     state4[tid] = make_float4(new0.x, new0.y, new1.x, new1.y);
 }
@@ -73,8 +101,8 @@ apply_gate_sm120(
     float2 a0 = state[i0];
     float2 a1 = state[i1];
 
-    float2 new0 = cadd(cmul(g00, a0), cmul(g01, a1));
-    float2 new1 = cadd(cmul(g10, a0), cmul(g11, a1));
+    float2 new0 = cmac2(g00, a0, g01, a1);
+    float2 new1 = cmac2(g10, a0, g11, a1);
 
     state[i0] = new0;
     state[i1] = new1;

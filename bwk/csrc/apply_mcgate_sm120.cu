@@ -32,6 +32,19 @@ __device__ __forceinline__ float2 cadd_mc(float2 a, float2 b) {
     return make_float2(a.x + b.x, a.y + b.y);
 }
 
+// Compensated complex multiply-accumulate: g0*a0 + g1*a1 (TwoProduct pairwise)
+__device__ __forceinline__ float2 cmac2_mc(float2 g0, float2 a0, float2 g1, float2 a1) {
+    float p0 = g0.x * a0.x, p1 = -g0.y * a0.y, p2 = g1.x * a1.x, p3 = -g1.y * a1.y;
+    float re = (p0 + p1) + (p2 + p3);
+    re += fmaf(g0.x, a0.x, -p0) + fmaf(-g0.y, a0.y, -p1)
+        + fmaf(g1.x, a1.x, -p2) + fmaf(-g1.y, a1.y, -p3);
+    float q0 = g0.x * a0.y, q1 = g0.y * a0.x, q2 = g1.x * a1.y, q3 = g1.y * a1.x;
+    float im = (q0 + q1) + (q2 + q3);
+    im += fmaf(g0.x, a0.y, -q0) + fmaf(g0.y, a0.x, -q1)
+        + fmaf(g1.x, a1.y, -q2) + fmaf(g1.y, a1.x, -q3);
+    return make_float2(re, im);
+}
+
 // Kernel parameter struct — passed by value (fits in registers)
 struct MCGateParams {
     int sorted_qubits[8];  // sorted qubit positions (controls + target)
@@ -75,8 +88,8 @@ apply_mcgate_sm120(
     float2 a0 = state[i0];
     float2 a1 = state[i1];
 
-    state[i0] = cadd_mc(cmul_mc(g00, a0), cmul_mc(g01, a1));
-    state[i1] = cadd_mc(cmul_mc(g10, a0), cmul_mc(g11, a1));
+    state[i0] = cmac2_mc(g00, a0, g01, a1);
+    state[i1] = cmac2_mc(g10, a0, g11, a1);
 }
 
 

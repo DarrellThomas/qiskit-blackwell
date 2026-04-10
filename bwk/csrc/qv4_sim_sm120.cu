@@ -79,20 +79,46 @@ __global__ void qv4_simulate_kernel(
             float r[4] = {sre[i0], sre[i1], sre[i2], sre[i3]};
             float m[4] = {sim[i0], sim[i1], sim[i2], sim[i3]};
 
-            // Complex matrix-vector multiply
+            // Complex matrix-vector multiply (TwoProduct compensated)
             float nr[4], ni[4];
             #pragma unroll
             for (int row = 0; row < 4; row++) {
-                float acc_re = 0.0f, acc_im = 0.0f;
+                // 8 products for real part, 8 for imaginary
+                // Use TwoProduct pairwise: compute products, sum, add error correction
+                float pre[8], pim[8];
                 #pragma unroll
                 for (int col = 0; col < 4; col++) {
                     float gr = gre[row * 4 + col];
                     float gi = gim[row * 4 + col];
-                    acc_re += gr * r[col] - gi * m[col];
-                    acc_im += gr * m[col] + gi * r[col];
+                    pre[col * 2 + 0] =  gr * r[col];
+                    pre[col * 2 + 1] = -gi * m[col];
+                    pim[col * 2 + 0] =  gr * m[col];
+                    pim[col * 2 + 1] =  gi * r[col];
                 }
-                nr[row] = acc_re;
-                ni[row] = acc_im;
+                // Pairwise sum + TwoProduct error correction
+                float sre = ((pre[0]+pre[1]) + (pre[2]+pre[3]))
+                          + ((pre[4]+pre[5]) + (pre[6]+pre[7]));
+                float ere = 0.0f;
+                #pragma unroll
+                for (int col = 0; col < 4; col++) {
+                    float gr = gre[row * 4 + col];
+                    float gi = gim[row * 4 + col];
+                    ere += fmaf( gr, r[col], -pre[col*2+0])
+                         + fmaf(-gi, m[col], -pre[col*2+1]);
+                }
+                nr[row] = sre + ere;
+
+                float sim_ = ((pim[0]+pim[1]) + (pim[2]+pim[3]))
+                           + ((pim[4]+pim[5]) + (pim[6]+pim[7]));
+                float eim = 0.0f;
+                #pragma unroll
+                for (int col = 0; col < 4; col++) {
+                    float gr = gre[row * 4 + col];
+                    float gi = gim[row * 4 + col];
+                    eim += fmaf(gr, m[col], -pim[col*2+0])
+                         + fmaf(gi, r[col], -pim[col*2+1]);
+                }
+                ni[row] = sim_ + eim;
             }
 
             // Write back
