@@ -12,7 +12,7 @@ cu_sources = sorted(glob(os.path.join(ROOT, "csrc", "*.cu")))
 
 setup(
     name="blackwell_kernels",
-    version="0.2.0",
+    version="0.1.0",
     description="Custom CUDA kernels for quantum simulation on RTX 5090 (sm_120a)",
     author="Darrell Thomas",
     license="MIT",

@@ -545,7 +545,7 @@ class BlackwellSimulator:
 
         return Result(
             backend_name="blackwell_simulator",
-            backend_version="0.2.0",
+            backend_version="0.1.0",
             qobj_id="",
             job_id="",
             success=True,
