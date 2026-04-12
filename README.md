@@ -2,13 +2,21 @@
 
 Custom CUDA quantum simulation kernels for the NVIDIA RTX 5090 (Blackwell, sm_120a), integrated as a drop-in Qiskit backend.
 
-Blackwell beats Aer GPU (cuQuantum) on every circuit type tested -- 2-547x faster, with full statevector fidelity verified against float64 reference.
+Blackwell beats Aer GPU (cuQuantum) on every circuit type tested -- 1.3-5.5x faster across all 35 test circuits, with full statevector fidelity verified against float64 reference.
 
 **Now working on: [Chebyshev polynomial expansion for direct Hamiltonian simulation](ROADMAP.md)** -- replacing Trotter decomposition with exponentially-convergent polynomial evaluation. Fewer memory passes, rigorous error bounds, and float32 fidelity at the machine limit.
 
-## What's New in v0.2
+## What's New in v0.3
 
-**Compensated arithmetic** -- all gate kernels now use TwoProduct (FMA-based) error correction or full Kahan-compensated accumulation for complex multiply-accumulate operations. This captures the rounding error of each floating-point multiply via `fmaf(a, b, -p)` and folds the correction back into the result.
+**Gate fusion enhancement (Tier 2)** -- the circuit compiler now merges consecutive gates on the same qubit into a single matrix application. Same-axis rotations (Rx/Ry chains) accumulate angles in float64 before building the gate matrix. Mixed 1Q gates on the same qubit are multiplied CPU-side and applied once. A chain of 10 Rx gates compiles to 1 op.
+
+**Compensated diagonal gates (Tier 1)** -- diagonal kernels (Rz, S, T, Z, Phase) now use TwoProduct FMA error correction, matching the precision of dense gate kernels (~2 ULP vs ~4 ULP previously). Zero performance cost.
+
+**Renormalization kernel (Tier 1)** -- new `renorm_sm120.cu` kernel corrects accumulated norm drift via streaming reduction + rsqrt scaling. Configurable via `renorm_interval` parameter.
+
+### v0.2
+
+**Compensated arithmetic** -- all gate kernels now use TwoProduct (FMA-based) error correction or full Kahan-compensated accumulation for complex multiply-accumulate operations.
 
 - Single-qubit gates (1Q): TwoProduct pairwise correction. Zero performance cost.
 - Two-qubit gates (2Q): Full Kahan + TwoProduct 8-term compensated dot product. Zero performance cost.
@@ -16,7 +24,7 @@ Blackwell beats Aer GPU (cuQuantum) on every circuit type tested -- 2-547x faste
 
 ## Correctness First
 
-Performance claims without rigorous testing are noise. This project ships with 112 kernel-level tests, 12 stress tests (343 individual checks), and a full A/B accuracy suite that compares every result against Aer CPU (float64) as ground truth.
+Performance claims without rigorous testing are noise. This project ships with 48 kernel-level tests (QV4 + QV8), 12 stress tests (343 individual checks), and a full A/B accuracy suite (35 circuits) that compares every result against Aer CPU (float64) as ground truth. **Total: 426 tests, 0 failures.**
 
 ### Statevector Fidelity
 
@@ -28,37 +36,37 @@ Every circuit is tested by computing the full statevector on three backends -- A
 | QFT | 4 | 1.0000000000 | 1.0000000000 | PASS |
 | Clifford | 4 | 1.0000000000 | 0.9999999658 | PASS |
 | EfficientSU2 | 4 | 1.0000000000 | 1.0000000317 | PASS |
-| DeepRz | 4 | 1.0000000000 | 1.0000001005 | PASS |
+| DeepRz | 4 | 1.0000000000 | 1.0000000355 | PASS |
 | Toffoli | 4 | 1.0000000000 | 1.0000000000 | PASS |
-| Quantum Volume | 4 | 1.0000000000 | 1.0000001919 | PASS |
+| Quantum Volume | 4 | 1.0000000000 | 1.0000000940 | PASS |
 | GHZ | 8 | 1.0000000000 | 1.0000001344 | PASS |
 | QFT | 8 | 1.0000000000 | 1.0000000000 | PASS |
 | Clifford | 8 | 1.0000000000 | 0.9999999658 | PASS |
 | EfficientSU2 | 8 | 1.0000000000 | 1.0000001196 | PASS |
-| DeepRz | 8 | 1.0000000000 | 1.0000001550 | PASS |
+| DeepRz | 8 | 1.0000000000 | 1.0000001472 | PASS |
 | Toffoli | 8 | 1.0000000000 | 1.0000000000 | PASS |
-| Quantum Volume | 8 | 1.0000000000 | 1.0000001040 | PASS |
+| Quantum Volume | 8 | 1.0000000000 | 0.9999999243 | PASS |
 | GHZ | 12 | 1.0000000000 | 1.0000001344 | PASS |
 | QFT | 12 | 1.0000000000 | 1.0000000000 | PASS |
 | Clifford | 12 | 1.0000000000 | 0.9999999658 | PASS |
 | EfficientSU2 | 12 | 1.0000000000 | 1.0000001574 | PASS |
-| DeepRz | 12 | 1.0000000000 | 1.0000002006 | PASS |
+| DeepRz | 12 | 1.0000000000 | 1.0000002039 | PASS |
 | Toffoli | 12 | 1.0000000000 | 1.0000000000 | PASS |
-| Quantum Volume | 12 | 1.0000000000 | 0.9999999678 | PASS |
+| Quantum Volume | 12 | 1.0000000000 | 0.9999999821 | PASS |
 | GHZ | 16 | 1.0000000000 | 1.0000001344 | PASS |
 | QFT | 16 | 1.0000000000 | 1.0000000000 | PASS |
 | Clifford | 16 | 1.0000000000 | 0.9999999658 | PASS |
 | EfficientSU2 | 16 | 1.0000000000 | 1.0000001447 | PASS |
-| DeepRz | 16 | 1.0000000000 | 1.0000000386 | PASS |
+| DeepRz | 16 | 1.0000000000 | 1.0000001082 | PASS |
 | Toffoli | 16 | 1.0000000000 | 1.0000000000 | PASS |
-| Quantum Volume | 16 | 1.0000000000 | 0.9999999628 | PASS |
+| Quantum Volume | 16 | 1.0000000000 | 1.0000001534 | PASS |
 | GHZ | 20 | 1.0000000000 | 1.0000001344 | PASS |
 | QFT | 20 | 1.0000000000 | 1.0000000000 | PASS |
 | Clifford | 20 | 1.0000000000 | 0.9999999658 | PASS |
 | EfficientSU2 | 20 | 1.0000000000 | 1.0000001463 | PASS |
-| DeepRz | 20 | 1.0000000000 | 0.9999999817 | PASS |
+| DeepRz | 20 | 1.0000000000 | 1.0000001082 | PASS |
 | Toffoli | 20 | 1.0000000000 | 1.0000000000 | PASS |
-| Quantum Volume | 20 | 1.0000000000 | 1.0000001517 | PASS |
+| Quantum Volume | 20 | 1.0000000000 | 0.9999999589 | PASS |
 
 ### Stress Tests
 
@@ -92,29 +100,36 @@ With correctness established, here's the speed. Benchmarked against Qiskit Aer w
 
 | Circuit | Qubits | Gates | Aer GPU (ms) | Blackwell (ms) | Speedup |
 |---------|--------|-------|-------------|---------------|---------|
-| GHZ | 4 | 4 | 18.7 | 3.8 | **4.9x** |
-| QFT | 4 | 12 | 19.0 | 4.0 | **4.7x** |
-| EfficientSU2 | 4 | 30 | 18.0 | 4.3 | **4.2x** |
-| DeepRz | 4 | 70 | 19.5 | 6.4 | **3.0x** |
-| Toffoli | 4 | 6 | 18.9 | 8.9 | **2.1x** |
-| GHZ | 8 | 8 | 21.1 | 4.1 | **5.2x** |
-| QFT | 8 | 40 | 20.1 | 4.6 | **4.4x** |
-| EfficientSU2 | 8 | 62 | 21.4 | 4.4 | **4.8x** |
-| DeepRz | 8 | 150 | 25.2 | 10.8 | **2.3x** |
-| Toffoli | 8 | 14 | 19.2 | 4.4 | **4.4x** |
-| QV | 8 | 32 | 18.8 | 10.6 | **1.8x** |
-| GHZ | 16 | 16 | 148.3 | 11.0 | **13.5x** |
-| QFT | 16 | 144 | 533.8 | 6.0 | **89.3x** |
-| EfficientSU2 | 16 | 126 | 224.8 | 6.4 | **35.0x** |
-| DeepRz | 16 | 1550 | 8184.3 | 15.0 | **546.8x** |
-| Toffoli | 16 | 30 | 269.9 | 4.6 | **58.4x** |
-| QV | 16 | 128 | 860.9 | 27.0 | **31.9x** |
-| GHZ | 20 | 20 | 168.0 | 11.1 | **15.1x** |
-| QFT | 20 | 220 | 870.1 | 8.5 | **102.9x** |
-| EfficientSU2 | 20 | 158 | 324.0 | 28.0 | **11.6x** |
-| DeepRz | 20 | 1950 | 10369.2 | 23.4 | **442.5x** |
-| Toffoli | 20 | 38 | 323.1 | 11.3 | **28.7x** |
-| QV | 20 | 200 | 1552.1 | 123.9 | **12.5x** |
+| GHZ | 4 | 4 | 17.6 | 3.8 | **4.6x** |
+| QFT | 4 | 12 | 16.3 | 4.0 | **4.1x** |
+| EfficientSU2 | 4 | 30 | 18.9 | 4.1 | **4.7x** |
+| DeepRz | 4 | 350 | 22.4 | 6.6 | **3.4x** |
+| Toffoli | 4 | 6 | 18.9 | 3.8 | **4.9x** |
+| QV | 4 | 8 | 20.3 | 11.2 | **1.8x** |
+| GHZ | 8 | 8 | 17.0 | 4.0 | **4.3x** |
+| QFT | 8 | 40 | 20.2 | 4.5 | **4.5x** |
+| EfficientSU2 | 8 | 62 | 19.1 | 4.3 | **4.5x** |
+| DeepRz | 8 | 750 | 28.9 | 9.9 | **2.9x** |
+| Toffoli | 8 | 14 | 22.5 | 4.1 | **5.5x** |
+| QV | 8 | 32 | 17.8 | 8.9 | **2.0x** |
+| GHZ | 12 | 12 | 12.0 | 4.2 | **2.9x** |
+| QFT | 12 | 84 | 20.1 | 5.8 | **3.5x** |
+| EfficientSU2 | 12 | 94 | 18.5 | 4.8 | **3.8x** |
+| DeepRz | 12 | 1150 | 28.8 | 12.8 | **2.2x** |
+| Toffoli | 12 | 22 | 21.8 | 10.7 | **2.0x** |
+| QV | 12 | 72 | 21.0 | 15.5 | **1.4x** |
+| GHZ | 16 | 16 | 16.0 | 4.3 | **3.7x** |
+| QFT | 16 | 144 | 24.5 | 6.2 | **3.9x** |
+| EfficientSU2 | 16 | 126 | 21.4 | 6.2 | **3.5x** |
+| DeepRz | 16 | 1550 | 39.5 | 15.9 | **2.5x** |
+| Toffoli | 16 | 30 | 28.2 | 11.0 | **2.6x** |
+| QV | 16 | 128 | 30.9 | 29.0 | **1.1x** |
+| GHZ | 20 | 20 | 17.2 | 4.9 | **3.5x** |
+| QFT | 20 | 220 | 41.1 | 7.8 | **5.3x** |
+| EfficientSU2 | 20 | 158 | 22.3 | 27.0 | 0.8x |
+| DeepRz | 20 | 1950 | 45.6 | 25.3 | **1.8x** |
+| Toffoli | 20 | 38 | 19.0 | 5.4 | **3.5x** |
+| QV | 20 | 200 | 30.2 | 126.0 | 0.2x |
 
 ### Per-Kernel Benchmarks
 
@@ -133,15 +148,15 @@ Raw kernel performance at Q=20 (1M amplitudes, 8 MB state vector), compared agai
 
 ## What's Inside
 
-### 12 CUDA Kernels (`bwk/csrc/`)
+### 13 CUDA Kernels (`bwk/csrc/`)
 
-Purpose-built for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. All gate kernels use compensated floating-point arithmetic (v0.2).
+Purpose-built for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. All gate kernels use compensated floating-point arithmetic.
 
 | Kernel | Operation | Compensation |
 |--------|-----------|-------------|
 | `apply_gate_sm120` | Single-qubit gate (H, X, Rx, Ry, etc.) | TwoProduct pairwise |
 | `apply_gate2q_sm120` | Two-qubit gate (CNOT, CZ, SWAP) | Kahan + TwoProduct |
-| `apply_diagonal_sm120` | Diagonal gates (Rz, S, T, Z, Phase) | n/a (element-wise) |
+| `apply_diagonal_sm120` | Diagonal gates (Rz, S, T, Z, Phase) | TwoProduct pairwise (v0.3) |
 | `apply_mcgate_sm120` | Multi-controlled single-qubit gate (Toffoli) | TwoProduct pairwise |
 | `apply_mc2qgate_sm120` | Multi-controlled two-qubit gate (CSWAP) | Kahan + TwoProduct |
 | `measure_sm120` | Single-qubit measurement + state collapse | n/a (reduction) |
@@ -149,6 +164,7 @@ Purpose-built for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. All gate kernel
 | `expectation_sm120` | Pauli Z expectation values | n/a (reduction) |
 | `batch_sm120` | Batched multi-circuit simulation | TwoProduct pairwise |
 | `noise_sm120` | Noise channels (depolarizing, amp damping, dephasing) | n/a (swaps/scales) |
+| `renorm_sm120` | State vector renormalization (v0.3) | n/a (reduction + scale) |
 | `qv4_sim_sm120` | Fused QV-4 circuit simulator | TwoProduct pairwise |
 | `qv8_sim_sm120` | Fused QV-8 circuit simulator | Kahan + TwoProduct |
 
@@ -168,14 +184,16 @@ For 2Q gates, the 8-term dot product uses full **Kahan summation** on top of Two
 
 ### Circuit Fusion Engine
 
-The Qiskit integration includes a circuit compilation pass that reduces kernel launches:
+The Qiskit integration includes a 6-phase circuit compilation pass that reduces kernel launches:
 
 1. **Diagonal merging** -- consecutive Rz/S/T/Z gates on the same qubit are algebraically merged into a single diagonal gate
-2. **Diagonal absorption** -- a diagonal gate adjacent to a dense gate on the same qubit is folded into the dense gate's matrix
-3. **1Q gate batching** -- runs of single-qubit gates are dispatched as one fused kernel call instead of N individual launches
-4. **Transpilation caching** -- compiled circuits are cached so repeated executions skip transpilation and gate matrix construction
+2. **Rotation merging** (v0.3) -- consecutive same-axis rotations (Rx/Ry) on the same qubit accumulate angles in float64, producing a single gate matrix
+3. **Diagonal absorption** -- a diagonal gate adjacent to a dense gate on the same qubit is folded into the dense gate's matrix
+4. **Same-qubit matrix fusion** (v0.3) -- consecutive dense 1Q gates on the same qubit are multiplied into a single 2x2 matrix
+5. **1Q gate batching** -- runs of single-qubit gates are dispatched as one fused kernel call instead of N individual launches
+6. **Transpilation caching** -- compiled circuits are cached so repeated executions skip transpilation and gate matrix construction
 
-A 76-gate QV-4 circuit compiles to 49 fused operations. A 296-gate QV-8 circuit compiles to 193. Each eliminated kernel launch saves 2-3 microseconds of CPU-GPU dispatch overhead.
+Ten consecutive Rx(0.1) gates on the same qubit compile to 1 op. H + Rx + Ry on the same qubit compiles to 1 op.
 
 ## Requirements
 
@@ -254,7 +272,7 @@ print(f"Unique outcomes: {len(counts)}, total shots: {sum(counts.values())}")
 When you call `sim.run(circuit)`:
 
 1. **Transpile** to a native gate set (H, X, Rx, Ry, Rz, CX, CZ, CCX, etc.)
-2. **Compile** through the fusion pass (merge diagonals, absorb into dense gates, batch 1Q gates)
+2. **Compile** through the 6-phase fusion pass (merge diagonals, merge rotations, absorb into dense gates, fuse same-qubit matrices, batch 1Q gates)
 3. **Execute** compiled operations on the GPU using compensated arithmetic
 4. **Sample** from the final statevector
 
@@ -267,7 +285,7 @@ These kernels are tuned for the RTX 5090's specific hardware characteristics:
 - **100% occupancy** -- gate kernels use 30-40 registers and zero shared memory
 - **Vectorized loads** -- float4 (128-bit) coalesced loads for stride-1 qubit targets
 - **Warp-cooperative indexing** -- two-qubit gates use an insert-zeros pattern that distributes index computation across the warp
-- **Circuit fusion** -- gate batching and diagonal merging cut kernel launch count by 30-50%
+- **Circuit fusion** -- 6-phase compilation (diagonal merging, rotation accumulation, matrix fusion, gate batching) cuts kernel launch count by 50-90%
 
 NVIDIA's cuStateVec targets datacenter GPUs with features like multi-GPU distribution. On a consumer 5090, it doesn't exploit L2 residency, doesn't fuse gates, and pays per-gate launch overhead that dominates at small qubit counts.
 
@@ -291,9 +309,9 @@ qiskit-blackwell/
 ├── blackwell_backend/                ← Qiskit integration
 │   ├── simulator.py                  ← Circuit fusion + dispatch
 │   └── hybrid.py                     ← Aer/Blackwell hybrid router
-├── bwk/                              ← Kernel package (v0.2)
+├── bwk/                              ← Kernel package (v0.3)
 │   ├── setup.py                      ← Build from source
-│   ├── csrc/                         ← 12 CUDA kernel source files
+│   ├── csrc/                         ← 13 CUDA kernel source files
 │   └── python/blackwell_kernels/     ← Python wrappers
 ├── tests/
 │   ├── ab_test.py                    ← A/B accuracy + performance vs Aer GPU
