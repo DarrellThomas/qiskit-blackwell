@@ -29,6 +29,7 @@ from blackwell_kernels._C import apply_dephasing as _apply_dephasing
 from blackwell_kernels._C import apply_gate_batched as _apply_gate_batched
 from blackwell_kernels._C import apply_gates_batched_fused as _apply_gates_batched_fused
 from blackwell_kernels._C import state_init_batched as _state_init_batched
+from blackwell_kernels._C import renormalize as _renormalize
 
 
 def apply_gate(state: torch.Tensor, gate: torch.Tensor, target_qubit: int) -> torch.Tensor:
@@ -490,3 +491,18 @@ def random_unitary_4x4(device="cuda"):
     ph = d / d.abs()
     q = q * ph.unsqueeze(0)
     return q.to(device)
+
+
+def renormalize(state: torch.Tensor) -> torch.Tensor:
+    """Renormalize state vector to unit norm.
+
+    Corrects accumulated floating-point drift from repeated gate application.
+    Two-pass GPU kernel: streaming reduction for ||psi||^2, then scale by 1/sqrt(norm).
+
+    Args:
+        state: complex64 tensor of shape [2^n], modified in-place
+
+    Returns:
+        state (modified in-place)
+    """
+    return _renormalize(state)

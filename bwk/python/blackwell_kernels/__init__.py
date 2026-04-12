@@ -20,6 +20,7 @@ from blackwell_kernels.cuquantum import (
     CircuitGraph, hadamard_gate, random_unitary,
     cnot_gate, cz_gate, swap_gate, random_unitary_4x4,
     rz_gate_diag, phase_gate_diag, t_gate_diag, s_gate_diag, z_gate_diag, cz_gate_diag,
+    renormalize,
 )
 
 from blackwell_kernels.qv8 import (

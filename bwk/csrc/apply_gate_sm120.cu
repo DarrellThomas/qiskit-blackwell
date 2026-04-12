@@ -381,6 +381,7 @@ torch::Tensor apply_gates_batched_fused_cuda(torch::Tensor states, torch::Tensor
 torch::Tensor state_init_batched_cuda(int64_t n_states, int64_t n_qubits);
 torch::Tensor qv8_simulate(torch::Tensor gate_matrices, torch::Tensor gate_qubits, int64_t num_circuits);
 torch::Tensor qv4_simulate(torch::Tensor gate_data, torch::Tensor pair_ids, int n_circuits, int n_gates);
+torch::Tensor renormalize_cuda(torch::Tensor state);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("apply_gate", &apply_gate_cuda,
@@ -454,4 +455,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Batched QV-4 circuit simulation (CUDA)",
           py::arg("gate_data"), py::arg("pair_ids"),
           py::arg("n_circuits"), py::arg("n_gates"));
+    m.def("renormalize", &renormalize_cuda,
+          "Renormalize state vector to unit norm (CUDA)",
+          py::arg("state"));
 }
