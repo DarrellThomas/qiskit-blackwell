@@ -4,6 +4,8 @@ Custom CUDA quantum simulation kernels for the NVIDIA RTX 5090 (Blackwell, sm_12
 
 Blackwell beats Aer GPU (cuQuantum) on every circuit type tested -- 2-547x faster, with full statevector fidelity verified against float64 reference.
 
+**Now working on: [Chebyshev polynomial expansion for direct Hamiltonian simulation](ROADMAP.md)** -- replacing Trotter decomposition with exponentially-convergent polynomial evaluation. Fewer memory passes, rigorous error bounds, and float32 fidelity at the machine limit.
+
 ## What's New in v0.2
 
 **Compensated arithmetic** -- all gate kernels now use TwoProduct (FMA-based) error correction or full Kahan-compensated accumulation for complex multiply-accumulate operations. This captures the rounding error of each floating-point multiply via `fmaf(a, b, -p)` and folds the correction back into the result.
