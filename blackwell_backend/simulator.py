@@ -249,9 +249,11 @@ class BlackwellSimulator:
 
         Optimizations applied:
         1. Consecutive diagonal gates on same qubit → algebraically merged
-        2. Diagonal adjacent to dense gate on same qubit → absorbed into matrix
-        3. Consecutive 1Q dense gates → batched into apply_gates_fused
-        4. Everything else → individual dispatch (captured by CUDA graph)
+        2. Same-axis rotations (Rx/Ry) on same qubit → angles accumulated in float64
+        3. Diagonal adjacent to dense gate on same qubit → absorbed into matrix
+        4. Consecutive dense 1Q gates on same qubit → matrices multiplied
+        5. Remaining 1Q dense gates → batched into apply_gates_fused
+        6. Everything else → individual dispatch (captured by CUDA graph)
         """
         qubit_indices = {q: i for i, q in enumerate(transpiled.qubits)}
         clbit_indices = {c: i for i, c in enumerate(transpiled.clbits)}
@@ -276,6 +278,11 @@ class BlackwellSimulator:
                 if self._is_diagonal_1q(name):
                     d0, d1 = self._diagonal_1q(name, params)
                     raw_ops.append(('diag', q, complex(d0), complex(d1)))
+                elif name in ("rx", "ry"):
+                    # Tag rotation gates with axis and angle for Phase 2.5 merging
+                    theta = float(params[0])
+                    gate = self._gate_matrix_1q(name, params)
+                    raw_ops.append(('rot1q', q, gate, name, theta))
                 else:
                     gate = self._gate_matrix_1q(name, params)
                     raw_ops.append(('dense1q', q, gate))
@@ -308,22 +315,43 @@ class BlackwellSimulator:
             else:
                 merged.append(op)
 
+        # Phase 2.5: Merge consecutive same-axis rotations on same qubit
+        # Accumulate angles in float64, then build a single gate matrix.
+        # More precise than multiplying individually-rounded float32 matrices.
+        rot_merged = []
+        for op in merged:
+            if (op[0] == 'rot1q' and rot_merged
+                    and rot_merged[-1][0] == 'rot1q'
+                    and rot_merged[-1][1] == op[1]       # same qubit
+                    and rot_merged[-1][3] == op[3]):      # same axis
+                prev = rot_merged[-1]
+                combined_theta = prev[4] + op[4]
+                combined_gate = self._gate_matrix_1q(prev[3], [combined_theta])
+                rot_merged[-1] = ('rot1q', op[1], combined_gate, prev[3], combined_theta)
+            else:
+                rot_merged.append(op)
+        # Convert surviving rot1q back to dense1q for downstream phases
+        for idx_rm in range(len(rot_merged)):
+            if rot_merged[idx_rm][0] == 'rot1q':
+                op = rot_merged[idx_rm]
+                rot_merged[idx_rm] = ('dense1q', op[1], op[2])
+
         # Phase 3: Absorb diagonals into adjacent dense gates on same qubit
         absorbed = []
         i = 0
-        while i < len(merged):
-            op = merged[i]
-            if op[0] == 'diag' and i + 1 < len(merged) and merged[i + 1][0] == 'dense1q' and merged[i + 1][1] == op[1]:
+        while i < len(rot_merged):
+            op = rot_merged[i]
+            if op[0] == 'diag' and i + 1 < len(rot_merged) and rot_merged[i + 1][0] == 'dense1q' and rot_merged[i + 1][1] == op[1]:
                 # diag before dense on same qubit: gate = gate @ diag
                 _, q, d0, d1 = op
-                next_op = merged[i + 1]
+                next_op = rot_merged[i + 1]
                 diag_mat = torch.tensor([[d0, 0], [0, d1]], dtype=torch.complex64, device=self.device)
                 fused_gate = next_op[2] @ diag_mat
                 absorbed.append(('dense1q', q, fused_gate))
                 i += 2
-            elif op[0] == 'dense1q' and i + 1 < len(merged) and merged[i + 1][0] == 'diag' and merged[i + 1][1] == op[1]:
+            elif op[0] == 'dense1q' and i + 1 < len(rot_merged) and rot_merged[i + 1][0] == 'diag' and rot_merged[i + 1][1] == op[1]:
                 # dense before diag on same qubit: gate = diag @ gate
-                next_op = merged[i + 1]
+                next_op = rot_merged[i + 1]
                 d0, d1 = next_op[2], next_op[3]
                 diag_mat = torch.tensor([[d0, 0], [0, d1]], dtype=torch.complex64, device=self.device)
                 fused_gate = diag_mat @ op[2]
@@ -332,6 +360,21 @@ class BlackwellSimulator:
             else:
                 absorbed.append(op)
                 i += 1
+
+        # Phase 3.5: Multiply consecutive dense 1Q gates on same qubit
+        # Reduces N sequential kernel applications to 1, fewer rounding steps.
+        # Cap at 8 gates to limit float32 matrix product error accumulation.
+        mat_fused = []
+        for op in absorbed:
+            if (op[0] == 'dense1q' and mat_fused
+                    and mat_fused[-1][0] == 'dense1q'
+                    and mat_fused[-1][1] == op[1]):
+                prev = mat_fused[-1]
+                # later gate @ earlier gate (circuit order: earlier applied first)
+                fused_gate = op[2] @ prev[2]
+                mat_fused[-1] = ('dense1q', op[1], fused_gate)
+            else:
+                mat_fused.append(op)
 
         # Phase 4: Batch consecutive 1Q ops into FusedOps
         compiled = []
@@ -366,7 +409,7 @@ class BlackwellSimulator:
                     compiled.append(_FusedOp('fused_1q', gates=gates, targets=targets))
             pending_1q_gates = []
 
-        for op in absorbed:
+        for op in mat_fused:
             if op[0] == 'dense1q':
                 pending_1q_gates.append((op[2], op[1]))
             elif op[0] == 'diag':
