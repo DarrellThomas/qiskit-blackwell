@@ -30,6 +30,11 @@ from blackwell_kernels._C import apply_gate_batched as _apply_gate_batched
 from blackwell_kernels._C import apply_gates_batched_fused as _apply_gates_batched_fused
 from blackwell_kernels._C import state_init_batched as _state_init_batched
 from blackwell_kernels._C import renormalize as _renormalize
+# Tier 3: Chebyshev Hamiltonian evolution (experimental/beta)
+from blackwell_kernels._C import spmv_csr as _spmv_csr
+from blackwell_kernels._C import chebyshev_step as _chebyshev_step
+from blackwell_kernels._C import chebyshev_accum as _chebyshev_accum
+from blackwell_kernels._C import chebyshev_step_accum as _chebyshev_step_accum
 
 
 def apply_gate(state: torch.Tensor, gate: torch.Tensor, target_qubit: int) -> torch.Tensor:
@@ -506,3 +511,45 @@ def renormalize(state: torch.Tensor) -> torch.Tensor:
         state (modified in-place)
     """
     return _renormalize(state)
+
+
+# ─── Tier 3: Chebyshev Hamiltonian evolution (experimental/beta) ─────
+
+def spmv_csr(row_ptr, col_idx, values, x, y,
+             alpha_re=1.0, alpha_im=0.0, beta_re=0.0, beta_im=0.0):
+    """Sparse matrix-vector multiply: y = alpha * A * x + beta * y.
+
+    EXPERIMENTAL (beta). Part of the Chebyshev evolution engine.
+
+    Args:
+        row_ptr: int32 [n_rows+1], col_idx: int32 [nnz], values: complex64 [nnz]
+        x: complex64 [n_rows] input, y: complex64 [n_rows] output (in-place)
+        alpha_re, alpha_im: complex scalar for A*x term
+        beta_re, beta_im: complex scalar for y term
+    """
+    _spmv_csr(row_ptr, col_idx, values, x, y,
+              alpha_re, alpha_im, beta_re, beta_im)
+
+
+def chebyshev_step(spmv_result, t_prev, t_next):
+    """Chebyshev recurrence: t_next = 2 * spmv_result - t_prev.
+
+    EXPERIMENTAL (beta).
+    """
+    _chebyshev_step(spmv_result, t_prev, t_next)
+
+
+def chebyshev_accum(accum, t_k, c_re, c_im):
+    """Chebyshev accumulation: accum += (c_re + i*c_im) * t_k.
+
+    EXPERIMENTAL (beta).
+    """
+    _chebyshev_accum(accum, t_k, c_re, c_im)
+
+
+def chebyshev_step_accum(spmv_result, t_prev, t_next, accum, c_re, c_im):
+    """Fused Chebyshev step + accumulation. Saves one memory pass.
+
+    EXPERIMENTAL (beta).
+    """
+    _chebyshev_step_accum(spmv_result, t_prev, t_next, accum, c_re, c_im)

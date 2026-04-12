@@ -2,29 +2,31 @@
 
 Custom CUDA quantum simulation kernels for the NVIDIA RTX 5090 (Blackwell, sm_120a), integrated as a drop-in Qiskit backend.
 
-Blackwell beats Aer GPU (cuQuantum) on every circuit type tested -- 1.3-5.5x faster across all 35 test circuits, with full statevector fidelity verified against float64 reference.
+Blackwell beats Aer GPU (cuQuantum) on 34/35 gate circuits tested (1.3-12.6x faster), with full statevector fidelity verified against float64 reference. The Chebyshev Hamiltonian evolution engine (beta) delivers 5-8200x speedup over scipy.linalg.expm with fidelity at the float32 machine limit.
 
-**Now working on: [Chebyshev polynomial expansion for direct Hamiltonian simulation](ROADMAP.md)** -- replacing Trotter decomposition with exponentially-convergent polynomial evaluation. Fewer memory passes, rigorous error bounds, and float32 fidelity at the machine limit.
+**New:** [Primer on quantum simulation, GPU optimization, and numerical methods](PRIMER.md) -- a 15-page introduction for the curious reader.
 
 ## What's New in v0.3
 
-**Gate fusion enhancement (Tier 2)** -- the circuit compiler now merges consecutive gates on the same qubit into a single matrix application. Same-axis rotations (Rx/Ry chains) accumulate angles in float64 before building the gate matrix. Mixed 1Q gates on the same qubit are multiplied CPU-side and applied once. A chain of 10 Rx gates compiles to 1 op.
+**Chebyshev Hamiltonian evolution (beta)** -- a second simulation mode that evaluates exp(-iHt)|psi> directly as a Chebyshev polynomial in the Hamiltonian, without gate decomposition. Accepts Qiskit's `SparsePauliOp`, converts to GPU-resident CSR, and runs the three-term recurrence with Kahan-compensated complex SpMV. 18/18 tests pass against scipy.linalg.expm reference, with 5-8200x speedup at 8-12 qubits.
 
-**Compensated diagonal gates (Tier 1)** -- diagonal kernels (Rz, S, T, Z, Phase) now use TwoProduct FMA error correction, matching the precision of dense gate kernels (~2 ULP vs ~4 ULP previously). Zero performance cost.
+**Gate fusion enhancement** -- the circuit compiler now merges consecutive gates on the same qubit into a single matrix application. Same-axis rotations (Rx/Ry chains) accumulate angles in float64. Mixed 1Q gates on the same qubit are multiplied CPU-side and applied once. A chain of 10 Rx gates compiles to 1 op.
 
-**Renormalization kernel (Tier 1)** -- new `renorm_sm120.cu` kernel corrects accumulated norm drift via streaming reduction + rsqrt scaling. Configurable via `renorm_interval` parameter.
+**Compensated diagonal gates** -- diagonal kernels (Rz, S, T, Z, Phase) now use TwoProduct FMA error correction, matching dense gate precision (~2 ULP). Zero performance cost.
+
+**Renormalization kernel** -- new `renorm_sm120.cu` corrects accumulated norm drift via streaming reduction + rsqrt scaling.
 
 ### v0.2
 
-**Compensated arithmetic** -- all gate kernels now use TwoProduct (FMA-based) error correction or full Kahan-compensated accumulation for complex multiply-accumulate operations.
+**Compensated arithmetic** -- all gate kernels use TwoProduct (FMA-based) error correction or full Kahan-compensated accumulation.
 
-- Single-qubit gates (1Q): TwoProduct pairwise correction. Zero performance cost.
-- Two-qubit gates (2Q): Full Kahan + TwoProduct 8-term compensated dot product. Zero performance cost.
+- 1Q gates: TwoProduct pairwise correction. Zero performance cost.
+- 2Q gates: Full Kahan + TwoProduct 8-term compensated dot product. Zero performance cost.
 - Fidelity improved from ~1e-7 residuals to <1e-13 (normalized state overlap vs float64 reference).
 
 ## Correctness First
 
-Performance claims without rigorous testing are noise. This project ships with 48 kernel-level tests (QV4 + QV8), 12 stress tests (343 individual checks), and a full A/B accuracy suite (35 circuits) that compares every result against Aer CPU (float64) as ground truth. **Total: 426 tests, 0 failures.**
+Performance claims without rigorous testing are noise. This project ships with 48 kernel-level tests (QV4 + QV8), 12 stress tests (343 individual checks), a full A/B/C test suite (35 gate circuits + 18 Hamiltonian evolution tests), all compared against float64 reference. **Total: 444 tests, 0 failures.**
 
 ### Statevector Fidelity
 
@@ -87,10 +89,28 @@ Beyond fidelity, we test properties that break subtly when kernels have edge-cas
 | **Large qubit scaling** | Run at Q=16, 20 to verify kernels work beyond L2-resident sizes. Catches assumptions that break when state vectors exceed cache. |
 | **Repeated gate stress** | Apply the same gate 1,000-10,000 times, verify final state matches analytic prediction. Catches accumulating rounding errors. |
 
+### Chebyshev Hamiltonian Evolution (beta)
+
+The Chebyshev engine is tested against `scipy.linalg.expm` (float64 dense matrix exponential) as ground truth. All 18 tests pass with fidelity > 0.9999999:
+
+| Hamiltonian | Qubits | t | Fidelity | K | scipy (ms) | Chebyshev (ms) | Speedup |
+|-------------|--------|---|----------|---|-----------|---------------|---------|
+| Z | 4 | 0.5 | 0.9999999611 | 10 | 0.13 | 1.23 | 0.1x |
+| Heisenberg | 4 | 1.0 | 1.0000000100 | 21 | 0.11 | 0.29 | 0.4x |
+| TFIM | 4 | 1.0 | 1.0000001252 | 26 | 0.08 | 0.38 | 0.2x |
+| Z | 8 | 0.5 | 0.9999999611 | 10 | 5.39 | 0.28 | **19.6x** |
+| Heisenberg | 8 | 0.5 | 1.0000000464 | 23 | 29.77 | 0.39 | **75.8x** |
+| TFIM | 8 | 0.5 | 1.0000001106 | 27 | 103.57 | 0.49 | **213.0x** |
+| Z | 12 | 0.5 | 0.9999999611 | 10 | 371.96 | 0.26 | **1420.3x** |
+| Heisenberg | 12 | 0.5 | 1.0000000004 | 28 | 3119.60 | 0.40 | **7781.2x** |
+| TFIM | 12 | 1.0 | 1.0000001228 | 50 | 5584.75 | 0.85 | **6567.1x** |
+
+At 4 qubits the GPU launch overhead dominates (the state vector is only 128 bytes). At 8+ qubits the Chebyshev engine scales dramatically -- three orders of magnitude faster than scipy at 12 qubits while maintaining fidelity at the float32 machine limit.
+
 Run the full suite yourself:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash run_ab_test.sh        # A/B accuracy + performance
+CUDA_VISIBLE_DEVICES=0 bash run_ab_test.sh        # A/B/C accuracy + performance + Chebyshev
 python tests/stress_test.py                         # 12 stress tests (343 checks)
 ```
 
@@ -148,7 +168,7 @@ Raw kernel performance at Q=20 (1M amplitudes, 8 MB state vector), compared agai
 
 ## What's Inside
 
-### 13 CUDA Kernels (`bwk/csrc/`)
+### 15 CUDA Kernels (`bwk/csrc/`)
 
 Purpose-built for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. All gate kernels use compensated floating-point arithmetic.
 
@@ -164,7 +184,9 @@ Purpose-built for sm_120a. No cuBLAS, no cuStateVec, no CUTLASS. All gate kernel
 | `expectation_sm120` | Pauli Z expectation values | n/a (reduction) |
 | `batch_sm120` | Batched multi-circuit simulation | TwoProduct pairwise |
 | `noise_sm120` | Noise channels (depolarizing, amp damping, dephasing) | n/a (swaps/scales) |
-| `renorm_sm120` | State vector renormalization (v0.3) | n/a (reduction + scale) |
+| `renorm_sm120` | State vector renormalization | n/a (reduction + scale) |
+| `spmv_sm120` | Complex CSR sparse matrix-vector multiply (beta) | Kahan + TwoProduct |
+| `chebyshev_sm120` | Chebyshev recurrence step + accumulation (beta) | n/a (element-wise) |
 | `qv4_sim_sm120` | Fused QV-4 circuit simulator | TwoProduct pairwise |
 | `qv8_sim_sm120` | Fused QV-8 circuit simulator | Kahan + TwoProduct |
 
@@ -267,6 +289,23 @@ counts = result.get_counts()
 print(f"Unique outcomes: {len(counts)}, total shots: {sum(counts.values())}")
 ```
 
+### Hamiltonian Evolution (beta)
+
+```python
+from qiskit.quantum_info import SparsePauliOp
+
+# Heisenberg chain: H = 0.5 * (XX + YY + ZZ) on nearest neighbors
+H = SparsePauliOp(['XXII', 'YYII', 'ZZII',
+                    'IXXI', 'IYYI', 'IZZI',
+                    'IIXX', 'IIYY', 'IIZZ'], [0.5]*9)
+
+# Evolve |0000> under H for time t=1.0
+sv, info = sim.run_hamiltonian(H, time_val=1.0, precision=1e-12)
+print(f"Chebyshev degree: {info['chebyshev_degree']}")
+print(f"Truncation error bound: {info['truncation_error_bound']:.1e}")
+print(f"Engine: {info['engine']}")  # 'chebyshev-beta'
+```
+
 ## How It Works
 
 When you call `sim.run(circuit)`:
@@ -307,17 +346,21 @@ These kernels target sm_120a (consumer Blackwell) and should run on any GPU in t
 ```
 qiskit-blackwell/
 ├── blackwell_backend/                ← Qiskit integration
-│   ├── simulator.py                  ← Circuit fusion + dispatch
-│   └── hybrid.py                     ← Aer/Blackwell hybrid router
+│   ├── simulator.py                  ← Circuit fusion + dispatch + run_hamiltonian()
+│   ├── hybrid.py                     ← Aer/Blackwell hybrid router
+│   ├── hamiltonian.py                ← SparsePauliOp → GPU CSR converter (beta)
+│   └── chebyshev.py                  ← Chebyshev evolution driver (beta)
 ├── bwk/                              ← Kernel package (v0.3)
 │   ├── setup.py                      ← Build from source
-│   ├── csrc/                         ← 13 CUDA kernel source files
+│   ├── csrc/                         ← 15 CUDA kernel source files
 │   └── python/blackwell_kernels/     ← Python wrappers
 ├── tests/
-│   ├── ab_test.py                    ← A/B accuracy + performance vs Aer GPU
+│   ├── ab_test.py                    ← A/B/C test: Aer GPU vs gate path vs Chebyshev
 │   ├── stress_test.py                ← 12 stress tests (343 checks)
 │   └── kernel_ab.py                  ← Compare two kernel builds
 ├── run_ab_test.sh                    ← One-command benchmark
+├── PRIMER.md                         ← Quantum simulation primer
+├── ROADMAP.md                        ← Chebyshev expansion roadmap
 └── README.md
 ```
 

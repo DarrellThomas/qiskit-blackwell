@@ -642,3 +642,82 @@ class BlackwellSimulator:
             "mean_s": float(np.mean(times)),
         }
         return result, stats
+
+    # -----------------------------------------------------------------
+    # Hamiltonian evolution (Chebyshev) — EXPERIMENTAL (beta)
+    # -----------------------------------------------------------------
+    def run_hamiltonian(self, hamiltonian, time_val, initial_state=None,
+                        precision=1e-10, shots=None):
+        """Evolve a state under a Hamiltonian using Chebyshev expansion.
+
+        EXPERIMENTAL (beta). This is a separate simulation mode from
+        the gate-by-gate path. It evaluates exp(-iHt)|psi> directly
+        as a Chebyshev polynomial in H, without gate decomposition.
+
+        Args:
+            hamiltonian: qiskit.quantum_info.SparsePauliOp or HamiltonianCSR
+            time_val: evolution time (float)
+            initial_state: complex64 tensor [2^n] or None (default: |0>^n)
+            precision: target truncation error for Chebyshev expansion
+            shots: if None, return (statevector, info). If int, return Result.
+
+        Returns:
+            If shots is None: (numpy_statevector, info_dict)
+            If shots is int: (qiskit.result.Result, info_dict)
+        """
+        from blackwell_backend.hamiltonian import HamiltonianCSR
+        from blackwell_backend.chebyshev import chebyshev_evolve
+
+        # Convert SparsePauliOp to CSR if needed
+        if not isinstance(hamiltonian, HamiltonianCSR):
+            hcsr = HamiltonianCSR.from_sparse_pauli_op(hamiltonian, device=self.device)
+        else:
+            hcsr = hamiltonian
+
+        # Initial state: |0>^n by default
+        if initial_state is None:
+            state = self.bk.state_init(hcsr.n_qubits)
+        else:
+            state = initial_state
+            if not state.is_cuda:
+                state = state.to(self.device)
+
+        # Run Chebyshev evolution
+        result_state, info = chebyshev_evolve(
+            state, hcsr, time_val, precision=precision, bk=self.bk
+        )
+
+        if shots is None:
+            sv = result_state.cpu().numpy()
+            return sv, info
+
+        # Sample from evolved state
+        samples = self.bk.sample(result_state, shots)
+        samples_np = samples.cpu().numpy()
+
+        n_qubits = hcsr.n_qubits
+        counts = {}
+        for s in samples_np:
+            bitstring = format(int(s), f"0{n_qubits}b")[::-1]
+            hex_key = hex(int(bitstring[::-1], 2))
+            counts[hex_key] = counts.get(hex_key, 0) + 1
+
+        result_data = ExperimentResultData(counts=counts)
+        exp_result = ExperimentResult(
+            shots=shots,
+            success=True,
+            data=result_data,
+            header={"name": "chebyshev_evolution", "n_qubits": n_qubits},
+            metadata=info,
+        )
+
+        result = Result(
+            backend_name="blackwell_simulator",
+            backend_version="0.1.0",
+            qobj_id="",
+            job_id="",
+            success=True,
+            results=[exp_result],
+            time_taken=info["elapsed_s"],
+        )
+        return result, info

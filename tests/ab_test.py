@@ -6,10 +6,11 @@
 # Licensed under the MIT License. See LICENSE file in the project root.
 # https://github.com/DarrellThomas/qiskit-blackwell
 """
-A/B Test Harness: Aer (cuQuantum GPU) vs Blackwell Custom Kernels
+A/B/C Test Harness: Aer (cuQuantum GPU) vs Blackwell Gate Path vs Chebyshev
 
-Compares accuracy (statevector fidelity) and performance (wall-clock time)
-across a suite of quantum circuits at varying qubit counts and depths.
+Phase 1 (A/B): Accuracy — statevector fidelity for gate-based circuits.
+Phase 2 (A/B): Performance — wall-clock sampling for gate-based circuits.
+Phase 3 (C):   Chebyshev Hamiltonian evolution (beta) — accuracy vs scipy expm.
 
 Usage:
     python tests/ab_test.py                    # full suite
@@ -34,6 +35,7 @@ from qiskit.quantum_info import Statevector, state_fidelity
 from qiskit_aer import AerSimulator
 
 from blackwell_backend import BlackwellSimulator
+from qiskit.quantum_info import SparsePauliOp
 
 
 # ─── Circuit Generators ──────────────────────────────────────────────
@@ -370,6 +372,100 @@ def build_circuit_suite(qubits_list, depths=None):
     return suite
 
 
+# ─── Hamiltonian Generators (Tier 3 / Chebyshev beta) ────────────────
+
+def make_hamiltonian_z(n_qubits):
+    """Single Z on qubit 0. Analytically solvable."""
+    label = "I" * (n_qubits - 1) + "Z"
+    return SparsePauliOp([label], [1.0]), f"Z-{n_qubits}q"
+
+
+def make_hamiltonian_heisenberg(n_qubits):
+    """Heisenberg XXX chain: sum_i (XX + YY + ZZ)."""
+    terms, coeffs = [], []
+    for i in range(n_qubits - 1):
+        for p in ["X", "Y", "Z"]:
+            label = ["I"] * n_qubits
+            label[i] = p
+            label[i + 1] = p
+            terms.append("".join(label))
+            coeffs.append(0.5)
+    return SparsePauliOp(terms, coeffs), f"Heisenberg-{n_qubits}q"
+
+
+def make_hamiltonian_tfim(n_qubits, h_field=1.0):
+    """Transverse-field Ising model: sum_i ZZ + h * sum_i X."""
+    terms, coeffs = [], []
+    for i in range(n_qubits - 1):
+        label = ["I"] * n_qubits
+        label[i] = "Z"
+        label[i + 1] = "Z"
+        terms.append("".join(label))
+        coeffs.append(1.0)
+    for i in range(n_qubits):
+        label = ["I"] * n_qubits
+        label[i] = "X"
+        terms.append("".join(label))
+        coeffs.append(h_field)
+    return SparsePauliOp(terms, coeffs), f"TFIM-{n_qubits}q"
+
+
+def build_hamiltonian_suite(qubits_list):
+    """Generate Hamiltonian test suite."""
+    suite = []
+    for n in qubits_list:
+        suite.append(make_hamiltonian_z(n))
+        if n >= 2:
+            suite.append(make_hamiltonian_heisenberg(n))
+            suite.append(make_hamiltonian_tfim(n))
+    return suite
+
+
+def run_hamiltonian_accuracy_test(name, hamiltonian, t=1.0, precision=1e-12, verbose=True):
+    """Compare Chebyshev evolution against scipy expm reference."""
+    import scipy.linalg
+
+    n_qubits = hamiltonian.num_qubits
+    dim = 1 << n_qubits
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"  {name}  ({n_qubits} qubits, {len(hamiltonian)} terms, t={t})")
+        print(f"{'='*70}")
+
+    # Reference: scipy expm (float64)
+    H_dense = np.array(hamiltonian.to_matrix())
+    psi0 = np.zeros(dim, dtype=np.complex128)
+    psi0[0] = 1.0
+    t0 = time.perf_counter()
+    sv_ref = scipy.linalg.expm(-1j * H_dense * t) @ psi0
+    t_ref = time.perf_counter() - t0
+
+    if verbose:
+        print(f"  scipy expm:    {t_ref*1000:8.2f} ms  (float64 reference)")
+
+    # Blackwell Chebyshev
+    sim = BlackwellSimulator()
+    sv_bw, info = sim.run_hamiltonian(hamiltonian, t, precision=precision)
+    fid = compute_fidelity(sv_ref, sv_bw)
+    K = info["chebyshev_degree"]
+    tail = info["truncation_error_bound"]
+    t_bw = info["elapsed_s"]
+    speedup = t_ref / t_bw if t_bw > 0 else float("inf")
+
+    if verbose:
+        print(f"  Chebyshev:     {t_bw*1000:8.2f} ms  fidelity={fid:.10f}"
+              f"  K={K}  tail={tail:.1e}  speedup={speedup:.2f}x")
+
+    return {
+        "fidelity": fid,
+        "chebyshev_degree": K,
+        "tail_bound": tail,
+        "scipy_ms": t_ref * 1000,
+        "chebyshev_ms": t_bw * 1000,
+        "speedup": speedup,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="A/B Test: Aer GPU vs Blackwell Kernels")
     parser.add_argument("--qubits", nargs="+", type=int, default=None,
@@ -399,8 +495,8 @@ def main():
     suite = build_circuit_suite(qubits_list, depths)
 
     print(f"\n{'#'*70}")
-    print(f"  A/B Test: Aer (cuQuantum GPU) vs Blackwell Custom Kernels")
-    print(f"  Circuits: {len(suite)}  |  Qubits: {qubits_list}")
+    print(f"  A/B/C Test: Aer GPU vs Blackwell Gate Path vs Chebyshev")
+    print(f"  Gate circuits: {len(suite)}  |  Qubits: {qubits_list}")
     print(f"{'#'*70}")
 
     # ── Accuracy tests ──
@@ -447,6 +543,42 @@ def main():
         for name, res in perf_results.items():
             print(f"  {name:<25} {res['aer_gpu_ms']:>13.2f} {res['blackwell_ms']:>15.2f} "
                   f"{res['speedup']:>8.2f}x")
+
+    # ── Phase 3: Chebyshev Hamiltonian evolution (beta) ──
+    if not args.perf_only:
+        # Use smaller qubit counts for Hamiltonian tests (scipy expm is O(2^3n))
+        ham_qubits = [n for n in qubits_list if n <= 12]
+        if not ham_qubits:
+            ham_qubits = [4]
+        ham_suite = build_hamiltonian_suite(ham_qubits)
+
+        print(f"\n\n{'='*70}")
+        print(f"  PHASE 3: CHEBYSHEV HAMILTONIAN EVOLUTION (beta)")
+        print(f"  Hamiltonians: {len(ham_suite)}  |  Qubits: {ham_qubits}")
+        print(f"{'='*70}")
+
+        ham_results = {}
+        for hamiltonian, name in ham_suite:
+            for t in [0.5, 1.0]:
+                label = f"{name}_t={t}"
+                try:
+                    res = run_hamiltonian_accuracy_test(label, hamiltonian, t=t)
+                    ham_results[label] = res
+                except Exception as e:
+                    print(f"\n  {label}: FAILED ({e})")
+
+        # Summary
+        print(f"\n\n{'='*70}")
+        print(f"  CHEBYSHEV SUMMARY (beta)")
+        print(f"{'='*70}")
+        print(f"  {'Hamiltonian':<25} {'Fidelity':>14} {'K':>5} {'scipy(ms)':>10} {'Cheby(ms)':>10} {'Speedup':>9} {'Status':>8}")
+        print(f"  {'─'*25} {'─'*14} {'─'*5} {'─'*10} {'─'*10} {'─'*9} {'─'*8}")
+        for label, res in ham_results.items():
+            fid = res["fidelity"]
+            status = "PASS" if fid > 0.999999 else "WARN" if fid > 0.9999 else "FAIL"
+            print(f"  {label:<25} {fid:>14.10f} {res['chebyshev_degree']:>5} "
+                  f"{res['scipy_ms']:>10.2f} {res['chebyshev_ms']:>10.2f} "
+                  f"{res['speedup']:>8.2f}x {status:>8}")
 
     print(f"\n{'#'*70}")
     print(f"  Done.")

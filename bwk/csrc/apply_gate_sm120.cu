@@ -382,6 +382,18 @@ torch::Tensor state_init_batched_cuda(int64_t n_states, int64_t n_qubits);
 torch::Tensor qv8_simulate(torch::Tensor gate_matrices, torch::Tensor gate_qubits, int64_t num_circuits);
 torch::Tensor qv4_simulate(torch::Tensor gate_data, torch::Tensor pair_ids, int n_circuits, int n_gates);
 torch::Tensor renormalize_cuda(torch::Tensor state);
+// Tier 3: Chebyshev Hamiltonian evolution (experimental/beta)
+void spmv_csr_cuda(torch::Tensor row_ptr, torch::Tensor col_idx,
+                    torch::Tensor values, torch::Tensor x, torch::Tensor y,
+                    double alpha_re, double alpha_im,
+                    double beta_re, double beta_im);
+void chebyshev_step_cuda(torch::Tensor spmv_result, torch::Tensor t_prev,
+                          torch::Tensor t_next);
+void chebyshev_accum_cuda(torch::Tensor accum, torch::Tensor t_k,
+                           double c_re, double c_im);
+void chebyshev_step_accum_cuda(torch::Tensor spmv_result, torch::Tensor t_prev,
+                                torch::Tensor t_next, torch::Tensor accum,
+                                double c_re, double c_im);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("apply_gate", &apply_gate_cuda,
@@ -458,4 +470,21 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("renormalize", &renormalize_cuda,
           "Renormalize state vector to unit norm (CUDA)",
           py::arg("state"));
+    // Tier 3: Chebyshev Hamiltonian evolution (experimental/beta)
+    m.def("spmv_csr", &spmv_csr_cuda,
+          "Sparse matrix-vector multiply: y = alpha*A*x + beta*y (CUDA, beta)",
+          py::arg("row_ptr"), py::arg("col_idx"), py::arg("values"),
+          py::arg("x"), py::arg("y"),
+          py::arg("alpha_re"), py::arg("alpha_im"),
+          py::arg("beta_re"), py::arg("beta_im"));
+    m.def("chebyshev_step", &chebyshev_step_cuda,
+          "Chebyshev recurrence: t_next = 2*spmv_result - t_prev (CUDA, beta)",
+          py::arg("spmv_result"), py::arg("t_prev"), py::arg("t_next"));
+    m.def("chebyshev_accum", &chebyshev_accum_cuda,
+          "Chebyshev accumulation: accum += c_k * t_k (CUDA, beta)",
+          py::arg("accum"), py::arg("t_k"), py::arg("c_re"), py::arg("c_im"));
+    m.def("chebyshev_step_accum", &chebyshev_step_accum_cuda,
+          "Fused Chebyshev step + accumulation (CUDA, beta)",
+          py::arg("spmv_result"), py::arg("t_prev"), py::arg("t_next"),
+          py::arg("accum"), py::arg("c_re"), py::arg("c_im"));
 }
